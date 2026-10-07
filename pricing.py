@@ -7,7 +7,11 @@ with open(os.path.join(os.path.dirname(__file__), "config.json")) as f:
 
 
 def tax_for(subtotal):
-    return round(subtotal * CONFIG["tax_rate"], 2)
+    # Tax settings now live in a nested "tax" block so regions can disable tax.
+    tax = CONFIG["tax"]
+    if not tax.get("enabled", True):
+        return 0.0
+    return round(subtotal * tax["rate"], 2)
 
 
 def quote(items):
