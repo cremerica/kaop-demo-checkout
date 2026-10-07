@@ -1,0 +1,52 @@
+# Builds the image for every push to main and deploys it to Cloud Run.
+# Auth is Workload Identity Federation: no keys or secrets. All settings are
+# repository variables, set by gcp-code-change.sh setup.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/checkout:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        # The commit goes into the image tag, a revision label, the revision
+        # name and the GIT_SHA env var, so logs and audit entries all name it.
+        run: |
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+            --image "$IMAGE" \
+            --service-account "${{ vars.RUNTIME_SA }}" \
+            --no-allow-unauthenticated --max-instances 2 \
+            --revision-suffix "${GITHUB_SHA:0:7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}" \
+            --labels "purpose=kaop-test,commit-sha=${GITHUB_SHA}" \
+            --set-env-vars "GIT_SHA=${GITHUB_SHA},GIT_REPO=${GITHUB_REPOSITORY},GIT_REF=${GITHUB_REF_NAME}" \
+            --quiet
